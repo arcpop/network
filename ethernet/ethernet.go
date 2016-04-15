@@ -16,12 +16,12 @@ import (
 //Layer3Paket represents an OSI layer 3 packet. Since we do not want ARP stuff in here to support 
 //also IPv6 and maybe others, the upper layer has to supply us with a destination mac address.
 type Layer3Paket struct {
-	data []byte
-	dstMAC net.HardwareAddr
+	Data []byte
+	DstMAC net.HardwareAddr
 }
 
 type protocol struct {
-	sendQueue chan Layer3Paket
+	sendQueue chan *Layer3Paket
 	recvQueue chan []byte
 	numberOfSendQueues int
 }
@@ -47,18 +47,20 @@ type EthernetLayer struct {
 }
 
 //NewEthernetLayer creates a new EthernetLayer
-func NewEthernetLayer(numberOfQueues, MTU int, sendQueueSize, receiveQueueSize int) (el *EthernetLayer) {
+func NewEthernetLayer(numberOfQueues, MTU, sendQueueSize, receiveQueueSize int, hwAddr net.HardwareAddr) (el *EthernetLayer) {
 	el = &EthernetLayer{
 		NumberOfQueues:   numberOfQueues,
 		mtu:              MTU,
 		sendQueueSize:    sendQueueSize,
 		receiveQueueSize: receiveQueueSize,
+		address: make([]byte, 6),
 	}
+	copy(el.address, hwAddr)
 	return el
 }
 
 //RegisterProtocolQueues registers the send and recv queues for a given ethernet type protocol.
-func (el *EthernetLayer) RegisterProtocolQueues(protocolType layers.EthernetType, numberOfSendQueues int, protocolSendQueue chan Layer3Paket, protocolRecvQueue chan []byte) {
+func (el *EthernetLayer) RegisterProtocolQueues(protocolType layers.EthernetType, numberOfSendQueues int, protocolSendQueue chan *Layer3Paket, protocolRecvQueue chan []byte) {
 	el.processingLock.RLock()
 	el.supportedProtocolQueuesLock.Lock()
 	_, ok := el.supportedProtocolQueues[uint16(protocolType)]
@@ -136,6 +138,15 @@ func (el *EthernetLayer) StopProcessing() {
 	el.processingLock.Unlock()
 }
 
+//GetMACAddress returns the associated MAC address of the interface we operate on.
+func (el *EthernetLayer) GetMACAddress() (net.HardwareAddr) {
+	var buf [6]byte
+	el.addressLock.RLock()
+	copy(buf[:], el.address)
+	el.addressLock.RUnlock()
+	return net.HardwareAddr(buf[:])
+}
+
 //Header represents an ethernet header
 type Header struct {
 	DstMAC       net.HardwareAddr
@@ -205,19 +216,19 @@ func (el *EthernetLayer) sendEthernet(protocolType uint16) {
 			return
 		}
 		l3pkt := <-pq.sendQueue
-		totalLength := len(l3pkt.data) + 14
+		totalLength := len(l3pkt.Data) + 14
 		if totalLength > el.mtu {
 			log.Println("Ethernet: Packet with an invalid size received. Paket will be dropped.")
 			el.supportedProtocolQueuesLock.RUnlock()	
 			continue
 		}
 		
-		copy(pkt[0:6], l3pkt.dstMAC)
+		copy(pkt[0:6], l3pkt.DstMAC)
 		el.addressLock.RLock()
 		copy(pkt[6:12], el.address)
 		el.addressLock.RUnlock()
 		binary.BigEndian.PutUint16(pkt[12:14], protocolType)
-		copy(pkt[14:], l3pkt.data)
+		copy(pkt[14:], l3pkt.Data)
 		el.sendQueue <- pkt
 		pkt = make([]byte, el.mtu)
 		el.supportedProtocolQueuesLock.RUnlock()
