@@ -6,12 +6,17 @@ import (
 	"sync"
 	"github.com/google/gopacket/layers"
 	"github.com/arcpop/network/ethernet"
+	"errors"
+	"time"
 )
 
 var (
     //BroadcastMACAddress is the broadcast hw address to send arp requests to.
     BroadcastMACAddress = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 )
+
+var ErrInvalidAddressRequested = errors.New("Invalid target in arp request with no local ip address")
+
 
 type lookup struct {
     ip uint32
@@ -31,19 +36,24 @@ type arpQuery struct {
     targetIP net.IP
 }
 
-//FindInCache finds an address in cache or gets it via an arp request
-func (al *ArpLayer) FindInCache(ip net.IP) (net.HardwareAddr, error) {
-    return nil, nil
+func findInCache(ip net.IP) (net.HardwareAddr, error) {
+    ip32 := binary.BigEndian.Uint32(ip)
+    arpCacheLock.RLock()
+    entry, ok := al.arpCache[ip32]
+    arpCacheLock.RUnlock()
+    if !ok || time.Now().After(entry.validUntil) {
+        return al.QueryIP(ip)
+    }
+    return entry.mac, nil
 }
 
-//Lookup performs an arp query
-func (al *ArpLayer) Lookup(targetIP net.IP) (net.HardwareAddr, error) {
+func queryIP(targetIP net.IP) (net.HardwareAddr, error) {
     var waiter chan bool
     
     //Check if already looking up
     ip32 := binary.BigEndian.Uint32(targetIP.To4())
-    al.lookupCacheLock.Lock()
-    for _, i := range al.lookupCache {
+    lookupCacheLock.Lock()
+    for _, i := range lookupCache {
         i.lock.Lock()
         if i.ip == ip32 {
             //Someone already requested a lookup, we queue into the waiters queue
@@ -54,30 +64,18 @@ func (al *ArpLayer) Lookup(targetIP net.IP) (net.HardwareAddr, error) {
         }
         i.lock.Unlock()
     }
-    localIP := al.ip4.GetLocalAddressForSubnet(targetIP)
-    if localIP == nil {
-        al.lookupCacheLock.Unlock()
-        return nil, ErrInvalidAddressRequested
-    }
     //We are the first, thus we must also send the arp request
     if waiter == nil {
         waiter = make(chan bool)
         l := &lookup{ip: ip32, waiters: []chan bool{ waiter, }}
-        al.lookupCache = append(al.lookupCache, l)
-        q := &arpQuery{
-            hwType: 1,
-            protocolType: layers.EthernetTypeIPv4,
-            hwSize: 6,
-            protocolSize: 4,
-            senderMAC: al.el.GetMACAddress(),
-            senderIP: senderIP,
-            targetMAC: make([]byte, 6),
-            targetIP: targetIP,
+        lookupCache = append(lookupCache, l)
+        pkt := sendArpQuery(targetIP)
+        if pkt == nil {
+            lookupCacheLock.Unlock()
+            return nil, ErrInvalidAddressRequested
         }
-        pkt := encode(q)
-        al.senderQueue <- &ethernet.Layer3Paket{Data: pkt, DstMAC: BroadcastMACAddress}
     }
-    al.lookupCacheLock.Unlock()
+    lookupCacheLock.Unlock()
     
     //We block until either the channel is closed or we got a message.
     //The worker automatically puts the replies into the cache and notifies all channels who looked it up.
@@ -86,16 +84,20 @@ func (al *ArpLayer) Lookup(targetIP net.IP) (net.HardwareAddr, error) {
     return al.FindInCache(targetIP)
 }
 
-func encode(q *arpQuery) []byte  {
+func sendArpQuery(targetIP net.IP) ethernet.Layer2Paket  {
+    localIP := al.ip4.GetLocalAddressForSubnet(targetIP)
+    if localIP == nil {
+        return nil
+    }
     p := make([]byte, 60)
-    binary.BigEndian.PutUint16(p[0:2], q.hwType)
-    binary.BigEndian.PutUint16(p[2:4], uint16(q.protocolType))
-    p[4] = q.hwSize
-    p[5] = q.protocolSize
-    binary.BigEndian.PutUint16(p[6:8], q.opcode)
-    copy(p[8:14], q.senderMAC)
-    copy(p[14:18], q.senderIP)
-    copy(p[18:24], q.targetMAC)
-    copy(p[24:28], q.targetIP)
+    binary.BigEndian.PutUint16(p[0:2], 0x0001)
+    binary.BigEndian.PutUint16(p[2:4], uint16(layers.EthernetTypeIPv4))
+    p[4] = 6
+    p[5] = 4
+    binary.BigEndian.PutUint16(p[6:8], 0x0001)
+    copy(p[8:14], srcMAC)
+    copy(p[14:18], localIP)
+    copy(p[18:24], BroadcastMACAddress)
+    copy(p[24:28], targetIP)
     return p
 }

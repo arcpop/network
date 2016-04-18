@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 	"github.com/arcpop/network/util"
+	"github.com/arcpop/network/config"
 )
 
 type tapQueue struct {
@@ -17,12 +18,13 @@ type tapQueue struct {
 	parent *Adapter
 }
 
-//NewAdapter creates a new Tap adapter with the corresponding queues for processing
-func NewAdapter(name string, numQueues int) (ta *Adapter, err error) {
-	ta = &Adapter{ NumberOfQueues: numQueues, }
-	ta.queues = make([]Tap, numQueues)
 
-	for i := 0; i < numQueues; i++ {
+//NewAdapter creates a new Tap adapter with the corresponding queues for processing
+func NewAdapter(name string) (ta *Adapter, err error) {
+	ta = &Adapter{ }
+	ta.queues = make([]Tap, config.Tap.NumberOfQueues)
+
+	for i := 0; i < config.Tap.NumberOfQueues; i++ {
 		var f *os.File
 		f, err = createTap(name)
 		if err != nil {
@@ -36,8 +38,7 @@ func NewAdapter(name string, numQueues int) (ta *Adapter, err error) {
 
 	var iface *net.Interface
 	iface, err = net.InterfaceByName(name)
-	ta.MTU = iface.MTU
-
+	config.Ethernet.MTU = iface.MTU
 	return ta, nil
 }
 
@@ -66,7 +67,7 @@ func (tq *tapQueue) Write(b []byte) (err error) {
 }
 
 func (tq *tapQueue) DoRead(receiveQueue chan []byte, stop chan bool) {
-	buf := make([]byte, tq.parent.MTU)
+	buf := make([]byte, config.Ethernet.MTU)
 	for {
 		if util.ChannelClosed(stop) {
 			return
@@ -76,7 +77,7 @@ func (tq *tapQueue) DoRead(receiveQueue chan []byte, stop chan bool) {
 			log.Println("Tap: Failed to read a packet", err)
 		}
 		receiveQueue <- buf
-		buf = make([]byte, tq.parent.MTU)
+		buf = make([]byte, config.Ethernet.MTU)
 	}
 }
 
@@ -86,8 +87,8 @@ func (tq *tapQueue) DoWrite(sendQueue chan []byte, stop chan bool) {
 		if !ok {
 			return
 		}
-		if len(buf) > tq.parent.MTU {
-			log.Println("Tap: Writing a too long packet to the wire:", len(buf), tq.parent.MTU)
+		if len(buf) > config.Ethernet.MTU {
+			log.Println("Tap: Writing a too long packet to the wire:", len(buf), config.Ethernet.MTU)
 		}
 		err := tq.Write(buf)
 		if err != nil {
@@ -127,4 +128,12 @@ func ioctl(fd, cmd, ptr uintptr) error {
 		return e
 	}
 	return nil
+}
+
+func (ta *Adapter) GetMTU() int {
+	
+}
+
+func (ta *Adapter) GetHWAddr() int {
+	
 }

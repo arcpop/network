@@ -3,8 +3,6 @@ package tap
 
 //Adapter represents a tap adapter with one or several processing queues
 type Adapter struct {
-	MTU    int
-    NumberOfQueues int
 	queues []Tap
 	stop   chan bool
     sendQueue, receiveQueue chan []byte
@@ -34,6 +32,7 @@ func (ta *Adapter) StartProcessing(sendQueue, receiveQueue chan []byte) {
 func (ta *Adapter) StopProcessing() {
 	close(ta.stop)
 }
+
 
 //Close will cleanup all ressources.
 func (ta *Adapter) Close() {

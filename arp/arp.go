@@ -6,64 +6,85 @@ import (
 	"sync"
     "github.com/arcpop/network/ethernet"
     "github.com/arcpop/network/ipv4"
+    "github.com/arcpop/network/config"
+	"github.com/google/gopacket/layers"
 	"log"
+	"encoding/binary"
+	"bytes"
 )
 
+const  (
+    MinArpPacketLength = 38
+)
 
 type arpCacheEntry struct {
-    ip net.IP
     mac net.HardwareAddr
     validUntil time.Time
 }
 
-type ArpLayer struct {
-    
-    runningLock sync.RWMutex
-    running bool
-    ticker *time.Ticker
-    el *ethernet.EthernetLayer
-    ip4 *ipv4.IPv4Layer
-    
-    //arpCache is the arpcache to lookup mac addresses for given ip addresses
-    arpCache map[uint32] *arpCacheEntry
-    arpCacheLock sync.RWMutex
-    
-    //lookupCache contains all sent but not yet received arp requests
-    lookupCache []*lookup
-    lookupCacheLock sync.Mutex
-    
-    senderQueue chan *ethernet.Layer3Paket
+
+//arpCache is the arpcache to lookup mac addresses for given ip addresses
+arpCache map[uint32] *arpCacheEntry
+arpCacheLock sync.RWMutex
+
+//lookupCache contains all sent but not yet received arp requests
+lookupCache []*lookup
+lookupCacheLock sync.Mutex
+
+
+type ArpPacket struct {
+    ethHdr *ethernet.Header
+    arpHdr *Header
 }
 
-
-func NewArpLayer() *ArpLayer {
-    return &ArpLayer{ arpCache: make(map[uint32] *arpCacheEntry), lookupCache: make([]*lookup, 0, 10) }
+type Header struct {
+    hwAddrType uint16
+    protoAddrType uint16
+    hwAddrLen byte
+    protoAddrLen byte
+    opcode uint16
+    srcHWAddr net.HardwareAddr
+    srcProtoAddr net.IP
+    targetHWAddr net.HardwareAddr
+    targetProtoAddr net.IP
 }
 
-func (al *ArpLayer) Start(el *ethernet.EthernetLayer)  {
-    al.runningLock.Lock()
-    defer al.runningLock.Unlock()
-    if al.running {
-        log.Println("Arp: Already running!")
+func Start(dev *netdev.NetDev) {
+    netDev = dev
+    arpCache = make(map[uint32] *arpCacheEntry)
+    lookupCache = make([]*lookup)
+}
+
+func In(pkt *ethernet.Layer2Packet) {
+    hdr := parseArpHeader(pkt.Data)
+    if hdr == nil {
         return
     }
-    al.running = true
-    al.el = el
-    al.ticker = time.NewTicker(500 * time.Millisecond)
-    go al.invalidateCache()
-    al.runningLock.Unlock()
+    arpPkt := &ArpPacket{ethHdr: pkt.L2Header, arpHdr: hdr}
+    go handlePacket(arpPkt)
 }
-
-
-func (al *ArpLayer) invalidateCache()  {
-    for _ = range al.ticker.C {
-        al.arpCacheLock.Lock()
-        for k, v := range al.arpCache {
-            if time.Now().After(v.validUntil) {
-                delete(al.arpCache, k)
-                go al.Lookup(v.ip)
-            }
+func handlePacket(arpPkt *ArpPacket) {
+    if arpPkt.arpHdr.opcode == 1 {
+        //Request, check if for this device's IP address.
+        if bytes.Compare(arpPkt.arpHdr.targetProtoAddr, netDev.GetIPv4Addr()) == 0 {
+            arpReply()
         }
-        al.arpCacheLock.Unlock()
+    }
+}
+func parseArpHeader(pkt []byte) *Header {
+    if len(pkt) < 28 {
+        log.Prinln("Arp: Packet too short!")
+        return nil
+    }
+    return &Header{
+        hwAddrType: binary.BigEndian.Uint16(pkt[0:2]),
+        protoAddrType: binary.BigEndian.Uint16(pkt[2:4]),
+        hwAddrLen: pkt[4],
+        protoAddrLen: pkt[5],
+        opcode: binary.BigEndian.Uint16(pkt[6:8]),
+        srcHWAddr: pkt[8:14],
+        srcProtoAddr: pkt[14:18],
+        targetHWAddr: pkt[18:24],
+        targetProtoAddr: pkt[24:28],
     }
 }
