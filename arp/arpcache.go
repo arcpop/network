@@ -153,13 +153,3 @@ func arpTicker() {
         arpCacheLock.Unlock()
     }
 }
-
-func IPToUint32(ip net.IP) uint32 {
-    return binary.BigEndian.Uint32(ip)
-}
-
-func ToIP(u uint32) net.IP {
-    var buf [4]byte
-    binary.BigEndian.PutUint32(buf[:], u)
-    return net.IP(buf[:])
-}

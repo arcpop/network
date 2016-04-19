@@ -4,8 +4,10 @@ import (
 	"net"
 	"github.com/arcpop/network/tap"
 	"github.com/arcpop/network/config"
+	"sync"
 	"sync/atomic"
 )
+
 
 
 type NetDev struct {
@@ -98,6 +100,22 @@ func NewTapDevice(name string) (*NetDev, error) {
     return netDev, nil
 }
 
+var (
+    interfaceList []*NetDev
+    interfaceListLock sync.RWLock
+)
+
+func NetdevByName(ifname string) *netdev.NetDev {
+    interfaceListLock.RLock()
+    defer interfaceListLock.RUnlock()
+    
+    for _, iface := range interfaceList {
+        if iface.GetName() == ifname {
+            return iface
+        }
+    }
+    return nil
+}
 
 
 func vetherRxPacket(dev *NetDev) []byte {
