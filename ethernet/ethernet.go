@@ -2,22 +2,28 @@
 package ethernet
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
-	"github.com/arcpop/network/netdev"
-	"net"
-	"bytes"
 	"github.com/arcpop/network/config"
-	"log"
 	"github.com/arcpop/network/ipv4"
+	"github.com/arcpop/network/netdev"
+	"log"
+	"net"
+)
+
+const (
+	//HeaderLength is the length of an ethernet header
+	HeaderLength = 14
 )
 
 //Layer2Packet represents a Layer 2 packet with ethernet header information
 type Layer2Packet struct {
-	Dev *netdev.NetDev
+	Dev      *netdev.NetDev
 	L2Header *Header
-	Data []byte
+	Data     []byte
 }
+
 
 //Header represents an ethernet header
 type Header struct {
@@ -39,10 +45,10 @@ func ethHdr(p []byte) *Header {
 		return nil
 	}
 	return &Header{
-		DstMAC: net.HardwareAddr(p[0:6]),
-		SrcMAC: net.HardwareAddr(p[6:12]),
-		EthernetType: binary.BigEndian.Uint16(p[12:14]), 
-		DataOffset: 14,
+		DstMAC:       net.HardwareAddr(p[0:6]),
+		SrcMAC:       net.HardwareAddr(p[6:12]),
+		EthernetType: binary.BigEndian.Uint16(p[12:14]),
+		DataOffset:   14,
 	}
 }
 
@@ -63,30 +69,29 @@ func ethernetRx(dev *netdev.NetDev) {
 			log.Println("Ethernet: Received multicast packet...")
 			continue
 		}
-		packet := &Layer2Packet{ Dev: dev, L2hdr: hdr, Data: pkt[hdr.DataOffset:]}
-		switch (hdr.EthernetType) {
+		packet := &Layer2Packet{Dev: dev, L2hdr: hdr, Data: pkt[hdr.DataOffset:]}
+		switch hdr.EthernetType {
 		case 0x0800:
 			if !macAddrCmp(hdr.DstMAC, config.Ethernet.MACAddress) {
 				log.Println("Ethernet: IPv4 Packet with wrong MAC address")
 				continue
-			} 
+			}
 			ipv4.In(packet)
 			continue
 		case 0x86DD:
 			if !macAddrCmp(hdr.DstMAC, config.Ethernet.MACAddress) {
 				log.Println("Ethernet: IPv6 Packet with wrong MAC address")
 				continue
-			} 
+			}
 			ipv6.In(packet)
 			continue
-		
+
 		case 0x0806:
 			arp.In(packet)
 			continue
 		default:
 			log.Println("Ethernet: Received unclassified packet!")
 		}
-		
+
 	}
 }
-

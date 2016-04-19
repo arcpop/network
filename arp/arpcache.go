@@ -4,8 +4,8 @@ import (
     "net"
 	"encoding/binary"
 	"sync"
-	"github.com/google/gopacket/layers"
 	"github.com/arcpop/network/ethernet"
+	"github.com/arcpop/network/netdev"
 	"errors"
 	"time"
 )
@@ -15,89 +15,127 @@ var (
     BroadcastMACAddress = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 )
 
-var ErrInvalidAddressRequested = errors.New("Invalid target in arp request with no local ip address")
+const (
+    DefaultTTL = 60,
+    Timeout = 5,
+)
 
+const (
+    waiting = iota
+    resolved = iota
+)
 
-type lookup struct {
-    ip uint32
-    lock sync.Mutex
-    waiters []chan bool
+type arpCacheEntry struct {
+    dev *netdev.NetDev
+    state int
+    mac net.HardwareAddr
+    ttl int
+    retries int
+    queuedPackets chan []byte
 }
 
-type arpQuery struct {
-    hwType uint16
-    protocolType layers.EthernetType
-    hwSize byte
-    protocolSize byte
-    opcode uint16
-    senderMAC net.HardwareAddr
-    senderIP net.IP
-    targetMAC net.HardwareAddr
-    targetIP net.IP
-}
+var (
+    arpCache map[uint32] *arpCacheEntry
+    arpCacheLock sync.RWMutex
+)
 
-func findInCache(ip net.IP) (net.HardwareAddr, error) {
-    ip32 := binary.BigEndian.Uint32(ip)
-    arpCacheLock.RLock()
-    entry, ok := al.arpCache[ip32]
-    arpCacheLock.RUnlock()
-    if !ok || time.Now().After(entry.validUntil) {
-        return al.QueryIP(ip)
-    }
-    return entry.mac, nil
-}
-
-func queryIP(targetIP net.IP) (net.HardwareAddr, error) {
-    var waiter chan bool
-    
-    //Check if already looking up
-    ip32 := binary.BigEndian.Uint32(targetIP.To4())
-    lookupCacheLock.Lock()
-    for _, i := range lookupCache {
-        i.lock.Lock()
-        if i.ip == ip32 {
-            //Someone already requested a lookup, we queue into the waiters queue
-            waiter = make(chan bool)
-            i.waiters = append(i.waiters, waiter)
-            i.lock.Unlock()
-            break
+func SetIPAndSend(dev *netdev.NetDev, pkt []byte, targetIP net.IP) {
+    arpCacheLock.Lock()
+    e, ok := arpCache[targetIP.ToUint32()]
+    if !ok {
+        e = &arpCacheEntry{
+            dev: dev,
+            state: waiting,
+            ttl: Timeout,
+            retries: 5,
+            queuedPackets: make(chan []byte, 1024),
         }
-        i.lock.Unlock()
+        e.queuedPackets <- pkt
+        arpCache[targetIP.ToUint32()] = e
+        arpCacheLock.Unlock()
+        go arpRequest(targetIP, dev)
+        return
     }
-    //We are the first, thus we must also send the arp request
-    if waiter == nil {
-        waiter = make(chan bool)
-        l := &lookup{ip: ip32, waiters: []chan bool{ waiter, }}
-        lookupCache = append(lookupCache, l)
-        pkt := sendArpQuery(targetIP)
-        if pkt == nil {
-            lookupCacheLock.Unlock()
-            return nil, ErrInvalidAddressRequested
-        }
+    e.queuedPackets <- pkt
+    arpCacheLock.Unlock()
+}
+func arpCacheInsert(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr)  {
+    ae := & arpCacheEntry{
+        state: resolved,
+        mac: make([]byte, 6),
+        dev: dev,
+        ttl: DefaultTTL,
     }
-    lookupCacheLock.Unlock()
-    
-    //We block until either the channel is closed or we got a message.
-    //The worker automatically puts the replies into the cache and notifies all channels who looked it up.
-    _, _ = <-waiter
-    
-    return al.FindInCache(targetIP)
+    copy(ae.mac, mac)
+    arpCacheLock.Lock()
+    oldEntry, ok := arpCache[ToUint32(ip)]
+    arpCache[ToUint32(ip)] = ae
+    arpCacheLock.Unlock()
+    if ok {
+        go sendQueuedPackets(oldEntry)
+    }
 }
 
-func sendArpQuery(targetIP net.IP) ethernet.Layer2Paket  {
-    localIP := al.ip4.GetLocalAddressForSubnet(targetIP)
-    if localIP == nil {
-        return nil
+func sendQueuedPackets(e *arpCacheEntry) {
+    if e.queuedPackets != nil {
+        for {
+            select {
+                case pkt := <- e.queuedPackets:
+                    copy(pkt[ethernet.HeaderLength + 12:], net.IP)
+                    e.dev.TxPacket(e.dev, pkt)
+                default:
+                    close(e.queuedPackets)
+                    return
+            }
+        }
     }
-    p := make([]byte, 60)
-    binary.BigEndian.PutUint16(p[0:2], 0x0001)
-    binary.BigEndian.PutUint16(p[2:4], uint16(layers.EthernetTypeIPv4))
-    p[4] = 6
-    p[5] = 4
-    binary.BigEndian.PutUint16(p[6:8], 0x0001)
-    copy(p[8:14], srcMAC)
-    copy(p[14:18], localIP)
-    copy(p[18:24], BroadcastMACAddress)
-    copy(p[24:28], targetIP)
-    return p
+}
+
+func dropQueuedPackets(e *arpCacheEntry) {
+    dropped = 0
+    if e.queuedPackets != nil && len(e.queuedPackets) > 0 {
+        for {
+            select {
+                case pkt := <- e.queuedPackets:
+                    dropped++
+                default:
+                    close(e.queuedPackets)
+                    log.Println("Arp: Dropped ", dropped, " packets due to not resolving arp request.")
+                    return
+            }
+        }
+    }
+}
+
+func arpTicker() {
+    tckr := time.NewTicker(time.Second)
+    for _ = range tckr.C {
+        arpCacheLock.Lock()
+        for k,v := range arpCache {
+            v.ttl--
+            if v.ttl <= 0 {
+                v.retry--
+                if (v.state == waiting && v.retry < 0) || (v.state == resolved) {
+                    if v.state == waiting {
+                        dropQueuedPackets(v)
+                    }
+                    delete(arpCache, k)
+                } else {
+                    v.ttl = Timeout
+                    arpRequest(ToIP(k), v.dev)
+                }
+            }
+        }
+        arpCacheLock.Unlock()
+    }
+}
+
+func (ip net.IP) ToUint32() uint32 {
+    return binary.BigEndian.Uint32(ip)
+}
+
+func ToIP(u uint32) net.IP {
+    var buf [4]byte
+    binary.BigEndian.PutUint32(buf[:], u)
+    return net.IP(buf)
 }
