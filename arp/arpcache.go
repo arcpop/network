@@ -4,10 +4,10 @@ import (
     "net"
 	"encoding/binary"
 	"sync"
-	"github.com/arcpop/network/ethernet"
 	"github.com/arcpop/network/netdev"
-	"errors"
+	"bytes"
 	"time"
+	"log"
 )
 
 var (
@@ -16,8 +16,8 @@ var (
 )
 
 const (
-    DefaultTTL = 60,
-    Timeout = 5,
+    DefaultTTL = 60
+    Timeout = 5
 )
 
 const (
@@ -39,9 +39,11 @@ var (
     arpCacheLock sync.RWMutex
 )
 
+//SetIPAndSend should be used by ipv4 layer to send packets. They get the destination mac assigned automatically.
 func SetIPAndSend(dev *netdev.NetDev, pkt []byte, targetIP net.IP) {
     arpCacheLock.Lock()
-    e, ok := arpCache[targetIP.ToUint32()]
+    ip32 := IPToUint32(targetIP)
+    e, ok := arpCache[ip32]
     if !ok {
         e = &arpCacheEntry{
             dev: dev,
@@ -51,15 +53,17 @@ func SetIPAndSend(dev *netdev.NetDev, pkt []byte, targetIP net.IP) {
             queuedPackets: make(chan []byte, 1024),
         }
         e.queuedPackets <- pkt
-        arpCache[targetIP.ToUint32()] = e
+        arpCache[ip32] = e
         arpCacheLock.Unlock()
         go arpRequest(targetIP, dev)
         return
     }
-    e.queuedPackets <- pkt
+    copy(pkt[0:6], e.mac)
+    e.dev.TxPacket(e.dev, pkt)
     arpCacheLock.Unlock()
 }
 func arpCacheInsert(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr)  {
+    ip32 := IPToUint32(ip)
     ae := & arpCacheEntry{
         state: resolved,
         mac: make([]byte, 6),
@@ -68,12 +72,32 @@ func arpCacheInsert(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr)  {
     }
     copy(ae.mac, mac)
     arpCacheLock.Lock()
-    oldEntry, ok := arpCache[ToUint32(ip)]
-    arpCache[ToUint32(ip)] = ae
+    oldEntry, ok := arpCache[ip32]
+    arpCache[ip32] = ae
     arpCacheLock.Unlock()
     if ok {
         go sendQueuedPackets(oldEntry)
     }
+}
+
+func cacheUpdate(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr) {
+    ip32 := IPToUint32(ip)
+    arpCacheLock.Lock()
+    e, ok := arpCache[ip32]
+    if !ok || e.state == waiting {
+        arpCacheLock.Unlock()
+        arpCacheInsert(dev, ip, mac)
+        return
+    }
+    //Check if there was some left over wrong entry
+    if bytes.Compare(mac, e.mac) != 0 {
+        delete(arpCache, ip32)
+        arpCacheLock.Unlock()
+        arpCacheInsert(dev, ip, mac)
+        return
+    }
+    e.ttl = DefaultTTL
+    arpCacheLock.Unlock()
 }
 
 func sendQueuedPackets(e *arpCacheEntry) {
@@ -81,7 +105,7 @@ func sendQueuedPackets(e *arpCacheEntry) {
         for {
             select {
                 case pkt := <- e.queuedPackets:
-                    copy(pkt[ethernet.HeaderLength + 12:], net.IP)
+                    copy(pkt[0:6], e.mac)
                     e.dev.TxPacket(e.dev, pkt)
                 default:
                     close(e.queuedPackets)
@@ -92,11 +116,11 @@ func sendQueuedPackets(e *arpCacheEntry) {
 }
 
 func dropQueuedPackets(e *arpCacheEntry) {
-    dropped = 0
+    dropped := 0
     if e.queuedPackets != nil && len(e.queuedPackets) > 0 {
         for {
             select {
-                case pkt := <- e.queuedPackets:
+                case _ = <- e.queuedPackets:
                     dropped++
                 default:
                     close(e.queuedPackets)
@@ -114,8 +138,8 @@ func arpTicker() {
         for k,v := range arpCache {
             v.ttl--
             if v.ttl <= 0 {
-                v.retry--
-                if (v.state == waiting && v.retry < 0) || (v.state == resolved) {
+                v.retries--
+                if (v.state == waiting && v.retries < 0) || (v.state == resolved) {
                     if v.state == waiting {
                         dropQueuedPackets(v)
                     }
@@ -130,12 +154,12 @@ func arpTicker() {
     }
 }
 
-func (ip net.IP) ToUint32() uint32 {
+func IPToUint32(ip net.IP) uint32 {
     return binary.BigEndian.Uint32(ip)
 }
 
 func ToIP(u uint32) net.IP {
     var buf [4]byte
     binary.BigEndian.PutUint32(buf[:], u)
-    return net.IP(buf)
+    return net.IP(buf[:])
 }

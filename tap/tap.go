@@ -1,8 +1,15 @@
 //Package tap is used to create a TAP adapter with one or several queues.
 package tap
 
+import (
+	"net"
+)
+
 //Adapter represents a tap adapter with one or several processing queues
 type Adapter struct {
+	hwAddr net.HardwareAddr
+	mtu int
+	name string
 	queues []Tap
 	stop   chan bool
     sendQueue, receiveQueue chan []byte

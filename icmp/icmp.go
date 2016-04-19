@@ -1,0 +1,5 @@
+package icmp
+
+func SendMessage() {
+    
+}
