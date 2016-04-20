@@ -8,10 +8,10 @@ import (
 )
 
 
-
 func Run() {
     stdin := bufio.NewReader(os.Stdin)
     for {
+        fmt.Print("$ ")
         line, _, err := stdin.ReadLine()
         if err != nil {
             fmt.Println(err)
