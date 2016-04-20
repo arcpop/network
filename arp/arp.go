@@ -17,7 +17,7 @@ const (
 type packet struct {
 	ethHdr *ethernet.Header
 	arpHdr *Header
-	dev    *netdev.NetDev
+	dev    netdev.Interface
 }
 
 //Header represents an arp header
@@ -63,7 +63,7 @@ func in(pkt *ethernet.Layer2Packet) {
 	go handlePacket(arpPkt)
 }
 
-func arpRequest(targetIP net.IP, dev *netdev.NetDev) {
+func arpRequest(targetIP net.IP, dev netdev.Interface) {
 	buf := make([]byte, HeaderLength+ethernet.HeaderLength)
 	copy(buf[0:6], BroadcastMACAddress)
 	copy(buf[6:12], dev.GetHardwareAddress())
@@ -78,10 +78,10 @@ func arpRequest(targetIP net.IP, dev *netdev.NetDev) {
 	copy(arpPkt[14:18], dev.GetIPv4Address())
 	copy(arpPkt[18:24], BroadcastMACAddress)
 	copy(arpPkt[24:28], targetIP)
-	dev.TxPacket(dev, buf)
+	dev.TxPacket(buf)
 }
 
-func arpReply(targetIP net.IP, targetMAC net.HardwareAddr,dev *netdev.NetDev) {
+func arpReply(targetIP net.IP, targetMAC net.HardwareAddr,dev netdev.Interface) {
 	buf := make([]byte, HeaderLength+ethernet.HeaderLength)
 	copy(buf[0:6], targetMAC)
 	copy(buf[6:12], dev.GetHardwareAddress())
@@ -96,7 +96,7 @@ func arpReply(targetIP net.IP, targetMAC net.HardwareAddr,dev *netdev.NetDev) {
 	copy(arpPkt[14:18], dev.GetIPv4Address())
 	copy(arpPkt[18:24], targetMAC)
 	copy(arpPkt[24:28], targetIP)
-	dev.TxPacket(dev, buf)
+	dev.TxPacket(buf)
 }
 
 func handlePacket(arpPkt *packet) {

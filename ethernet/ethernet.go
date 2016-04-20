@@ -26,7 +26,7 @@ var (
 
 //Layer2Packet represents a Layer 2 packet with ethernet header information
 type Layer2Packet struct {
-	Dev      *netdev.NetDev
+	Dev      netdev.Interface
 	L2Header *Header
 	Data     []byte
 }
@@ -41,7 +41,7 @@ type Header struct {
 }
 
 //Start starts receiving ethernet frames from the specified NetDev.
-func Start(dev *netdev.NetDev) {
+func Start(dev netdev.Interface) {
 	for i := 0; i < config.Ethernet.NumberOfQueueWorkers; i++ {
 		go ethernetRx(dev)
 	}
@@ -63,9 +63,12 @@ func macAddrCmp(a, b net.HardwareAddr) bool {
 	return bytes.Compare(a, b) == 0
 }
 
-func ethernetRx(dev *netdev.NetDev) {
+func ethernetRx(dev netdev.Interface) {
 	for {
-		pkt := dev.RxPacket(dev)
+		pkt := dev.RxPacket()
+		if pkt == nil {
+			continue
+		}
 		hdr := ethHdr(pkt)
 		if hdr == nil {
 			log.Println("Ethernet: Malformed ethernet packet (too short)")

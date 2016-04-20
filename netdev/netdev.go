@@ -2,136 +2,77 @@ package netdev
 
 import (
 	"net"
-	"github.com/arcpop/network/tap"
-	"github.com/arcpop/network/config"
 	"sync"
-	"sync/atomic"
+	"errors"
 )
 
-
-
-type NetDev struct {
-    RxPacket func (dev *NetDev) []byte
-    TxPacket func (dev *NetDev, pkt []byte)
+type Interface interface {
+    RxPacket() []byte
+    TxPacket(pkt []byte)
     
-    GetName func () string
-    GetMTU func() int
+    GetName()string
+    GetMTU() int
     
-    GetIPv4Address func () net.IP
-    GetIPv4Netmask func () net.IP
-    SetIPv4Address func (ip, netmask net.IP)
+    GetTxStats() (pkts uint64, bytes uint64, errors uint64)
+    GetRxStats() (pkts uint64, bytes uint64, errors uint64)
     
-    GetIPv6Address func () net.IP
-    GetIPv6Netmask func () int
-    SetIPv6Address func (ip net.IP, netmask int)
+    GetIPv4Address() net.IP
+    GetIPv4Netmask() net.IP
+    SetIPv4Address(ip, netmask net.IP)
     
-    GetHardwareAddress func () net.HardwareAddr
+    GetIPv6Address() net.IP
+    GetIPv6Netmask() int
+    SetIPv6Address(ip net.IP, netmask int)
     
-    Stats struct {
-        TxPackets, TxBytes, TxErrors uint64
-        RxPackets, RxBytes, RxErrors uint64
-    }
-    vether *VEthernet
+    GetHardwareAddress() net.HardwareAddr
+    
+    Close()
 }
 
-type VEthernet struct {
-    txQueue chan []byte
-    rxQueue chan []byte
-    tapDev *tap.Adapter
-    name string
-    mtu int
-    macAddr net.HardwareAddr
-    ipv4addr net.IP
-    ipv4nm net.IP
-    ipv6addr net.IP
-    ipv6nm int
+type InterfaceStats struct {
+    TxPackets, TxBytes, TxErrors uint64
+    RxPackets, RxBytes, RxErrors uint64
 }
 
-func NewLoopbackDevice() (*NetDev, error) {
-    return &NetDev {
-        RxPacket: loopbackRxPacket,
-        TxPacket: loopbackTxPacket,
-        GetName: func () string { return "lo" },
-        GetMTU: func () int { return 1500 },
-        GetIPv4Address: func() net.IP { return net.IP{127, 0, 0, 1} },
-        GetIPv4Netmask: func() net.IP { return net.IP{255, 0, 0, 0} },
-        SetIPv4Address: func(ip, netmask net.IP) { return },
-        GetIPv6Address: func () net.IP { return net.IP{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1} },
-        GetIPv6Netmask: func () int { return 128 },
-        SetIPv6Address: func (ip net.IP, netmask int) { return },
-        GetHardwareAddress: func () net.HardwareAddr { return nil },
-    }, nil
+var ErrLoopbackAlreadyExists = errors.New("Netdev: Loopback device already exists!")
+
+func NewLoopback(name string) (Interface, error) {
+    l := &loopback { name: name, }
+    
+    interfaceListLock.Lock()
+    defer interfaceListLock.Unlock()
+    
+    if loopbackExists {
+        return nil, ErrLoopbackAlreadyExists
+    }
+    
+    loopbackExists = true
+    interfaceList = append(interfaceList, l)
+    return l, nil
 }
 
-func NewTapDevice(name string) (*NetDev, error) {
-    adapter, err := tap.NewAdapter(name)
-    if err != nil {
-        return nil, err
+var interfaceListLock sync.RWMutex
+var interfaceList []Interface
+var loopbackExists = false
+
+
+func ShutdownInterfaces()  {
+    interfaceListLock.Lock()
+    loopbackExists = false
+    for _, v := range interfaceList {
+        v.Close()
     }
-    vether := &VEthernet{
-        txQueue: make(chan []byte, config.Ethernet.TxQueueSize),
-        rxQueue: make(chan []byte, config.Ethernet.RxQueueSize),
-        tapDev: adapter,
-        name: name,
-        mtu: adapter.GetMTU(),
-        macAddr: adapter.GetHWAddr(),
-    }
-    adapter.StartProcessing(vether.txQueue, vether.rxQueue)
-    netDev := &NetDev{
-        vether: vether,
-        RxPacket: vetherRxPacket,
-        TxPacket: vetherTxPacket,
-        GetName: func () string { return vether.name },
-        GetMTU: func () int { return vether.mtu },
-        GetIPv4Address: func() net.IP { return vether.ipv4addr },
-        GetIPv4Netmask: func() net.IP { return vether.ipv4nm },
-        SetIPv4Address: func(ip, netmask net.IP) { 
-            vether.ipv4addr = ip
-            vether.ipv4nm = netmask
-        },
-        GetIPv6Address: func () net.IP { return vether.ipv6addr },
-        GetIPv6Netmask: func () int { return vether.ipv6nm },
-        SetIPv6Address: func (ip net.IP, netmask int) { 
-            vether.ipv6addr = ip
-            vether.ipv6nm = netmask
-        },
-        GetHardwareAddress: func () net.HardwareAddr { return vether.macAddr },
-    }
-    return netDev, nil
+    interfaceList = nil
+    interfaceListLock.Unlock()
 }
 
-var (
-    interfaceList []*NetDev
-    interfaceListLock sync.RWLock
-)
-
-func NetdevByName(ifname string) *netdev.NetDev {
+func InterfaceByName(name string) Interface {
     interfaceListLock.RLock()
     defer interfaceListLock.RUnlock()
-    
-    for _, iface := range interfaceList {
-        if iface.GetName() == ifname {
-            return iface
+    for _, v := range interfaceList {
+        if v.GetName() == name {
+            return v
         }
     }
     return nil
-}
-
-
-func vetherRxPacket(dev *NetDev) []byte {
-    pkt := <- dev.vether.rxQueue
-    atomic.AddUint64(&dev.Stats.RxBytes, uint64(len(pkt)))
-    atomic.AddUint64(&dev.Stats.RxPackets, 1)
-    return pkt
-}
-
-func vetherTxPacket(dev *NetDev, pkt []byte) {
-    l := uint64(len(pkt))
-    select {
-        case dev.vether.txQueue <- pkt:
-            atomic.AddUint64(&dev.Stats.TxBytes, l)
-            atomic.AddUint64(&dev.Stats.TxPackets, 1)
-        default:
-            atomic.AddUint64(&dev.Stats.TxErrors, 1)
-    }
 }

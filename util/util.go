@@ -4,9 +4,10 @@ package util
 import (
 	"encoding/binary"
 	"net"
-	"github.com/arcpop/network/netdev"
+	"errors"
 )
 
+var ErrNotImplemented = errors.New("Functionality not implemented")
 
 
 //ChannelClosed returns true if the stop channel is closed and false otherwise.

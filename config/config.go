@@ -13,11 +13,13 @@ var Ethernet struct {
     TxQueueSize, RxQueueSize int
 }
 
-var Tap struct {
-    NumberOfQueues int
+var Device struct {
+    RxQueueSize int
+    TxQueueSize int
+    RxQueueWorkers int
+    TxQueueWorkers int
 }
 
 
 func init()  {
-    Tap.NumberOfQueues = 1
 }

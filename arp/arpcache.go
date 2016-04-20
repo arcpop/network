@@ -2,12 +2,12 @@ package arp
 
 import (
     "net"
-	"encoding/binary"
 	"sync"
 	"github.com/arcpop/network/netdev"
 	"bytes"
 	"time"
 	"log"
+	"github.com/arcpop/network/util"
 )
 
 var (
@@ -26,7 +26,7 @@ const (
 )
 
 type arpCacheEntry struct {
-    dev *netdev.NetDev
+    dev netdev.Interface
     state int
     mac net.HardwareAddr
     ttl int
@@ -40,9 +40,9 @@ var (
 )
 
 //SetIPAndSend should be used by ipv4 layer to send packets. They get the destination mac assigned automatically.
-func SetIPAndSend(dev *netdev.NetDev, pkt []byte, targetIP net.IP) {
+func SetIPAndSend(dev netdev.Interface, pkt []byte, targetIP net.IP) {
     arpCacheLock.Lock()
-    ip32 := IPToUint32(targetIP)
+    ip32 := util.IPToUint32(targetIP)
     e, ok := arpCache[ip32]
     if !ok {
         e = &arpCacheEntry{
@@ -59,11 +59,11 @@ func SetIPAndSend(dev *netdev.NetDev, pkt []byte, targetIP net.IP) {
         return
     }
     copy(pkt[0:6], e.mac)
-    e.dev.TxPacket(e.dev, pkt)
+    e.dev.TxPacket(pkt)
     arpCacheLock.Unlock()
 }
-func arpCacheInsert(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr)  {
-    ip32 := IPToUint32(ip)
+func arpCacheInsert(dev netdev.Interface, ip net.IP, mac net.HardwareAddr)  {
+    ip32 := util.IPToUint32(ip)
     ae := & arpCacheEntry{
         state: resolved,
         mac: make([]byte, 6),
@@ -80,8 +80,8 @@ func arpCacheInsert(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr)  {
     }
 }
 
-func cacheUpdate(dev *netdev.NetDev, ip net.IP, mac net.HardwareAddr) {
-    ip32 := IPToUint32(ip)
+func cacheUpdate(dev netdev.Interface, ip net.IP, mac net.HardwareAddr) {
+    ip32 := util.IPToUint32(ip)
     arpCacheLock.Lock()
     e, ok := arpCache[ip32]
     if !ok || e.state == waiting {
@@ -106,7 +106,7 @@ func sendQueuedPackets(e *arpCacheEntry) {
             select {
                 case pkt := <- e.queuedPackets:
                     copy(pkt[0:6], e.mac)
-                    e.dev.TxPacket(e.dev, pkt)
+                    e.dev.TxPacket(pkt)
                 default:
                     close(e.queuedPackets)
                     return
@@ -146,7 +146,7 @@ func arpTicker() {
                     delete(arpCache, k)
                 } else {
                     v.ttl = Timeout
-                    arpRequest(ToIP(k), v.dev)
+                    arpRequest(util.ToIP(k), v.dev)
                 }
             }
         }
