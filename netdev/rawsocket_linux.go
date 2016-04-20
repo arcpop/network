@@ -84,6 +84,7 @@ func NewRawSocket(ifname string) (Interface, error) {
 }
 
 func (rs *rawsock) rxPacketWorker() {
+    log.Println("RawSocket: RxWorker starting!")
     for {
         //MTU + ethernet header size
         pkt := make([]byte, rs.iface.MTU + 14)
@@ -99,13 +100,14 @@ func (rs *rawsock) rxPacketWorker() {
     }
 }
 func (rs *rawsock) txPacketWorker() {
+    log.Println("RawSocket: TxWorker starting!")
     sockaddrll := &syscall.SockaddrLinklayer{
         Ifindex: rs.iface.Index,
         Protocol: 0x0300,
         Halen: 6,
     }
     for pkt := range rs.TxQueue {
-        copy(pkt[0:6], sockaddrll.Addr[0:6])
+        copy(sockaddrll.Addr[0:6], pkt[0:6])
         err := syscall.Sendto(rs.fd, pkt, 0, sockaddrll)
         if err != nil {
             log.Println("RawSocket.Sendto: ", err)

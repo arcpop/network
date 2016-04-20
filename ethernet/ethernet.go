@@ -13,6 +13,7 @@ import (
 const (
 	//HeaderLength is the length of an ethernet header
 	HeaderLength = 14
+    
 )
 
 var (
@@ -22,6 +23,8 @@ var (
 	IPv6In func (*Layer2Packet)
 	//ArpIn should be defined by arp layer to receive packets
 	ArpIn func (*Layer2Packet)
+	
+	BroadcastMACAddress = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 )
 
 //Layer2Packet represents a Layer 2 packet with ethernet header information
@@ -29,8 +32,15 @@ type Layer2Packet struct {
 	Dev      netdev.Interface
 	L2Header *Header
 	Data     []byte
+	PacketType int
 }
 
+const (
+	PacketTypeBroadcast = iota
+	PacketTypeMulticast = iota
+	PacketTypeUnicast = iota
+	PacketTypeLocal = iota
+)
 
 //Header represents an ethernet header
 type Header struct {
@@ -64,33 +74,40 @@ func macAddrCmp(a, b net.HardwareAddr) bool {
 }
 
 func ethernetRx(dev netdev.Interface) {
+	log.Println("Ethernet: Worker waiting for packets on Interface", dev.GetName())
 	for {
 		pkt := dev.RxPacket()
-		if pkt == nil {
-			continue
-		}
 		hdr := ethHdr(pkt)
 		if hdr == nil {
 			log.Println("Ethernet: Malformed ethernet packet (too short)")
 			continue
 		}
-		//Check if multicast packet
-		if (hdr.DstMAC[0] & 1) != 0 {
-			log.Println("Ethernet: Received multicast packet...")
-			continue
+		packet := &Layer2Packet{
+			Dev: dev, 
+			L2Header: hdr, 
+			Data: pkt[hdr.DataOffset:],
+			PacketType: PacketTypeUnicast,
 		}
-		packet := &Layer2Packet{Dev: dev, L2Header: hdr, Data: pkt[hdr.DataOffset:]}
+		
+		if ((hdr.DstMAC[0] & 1) != 0) {
+			if bytes.Compare(hdr.DstMAC, BroadcastMACAddress) == 0 {
+				packet.PacketType = PacketTypeBroadcast
+			} else {
+				packet.PacketType = PacketTypeMulticast
+				continue //Drop that
+			}
+		}
+		
+		
 		switch hdr.EthernetType {
 		case 0x0800:
 			if !macAddrCmp(hdr.DstMAC, dev.GetHardwareAddress()) {
-				log.Println("Ethernet: IPv4 Packet with wrong MAC address")
 				continue
 			}
 			IPv4In(packet)
 			continue
 		case 0x86DD:
 			if !macAddrCmp(hdr.DstMAC, dev.GetHardwareAddress()) {
-				log.Println("Ethernet: IPv6 Packet with wrong MAC address")
 				continue
 			}
 			IPv6In(packet)

@@ -4,6 +4,7 @@ import (
     "github.com/arcpop/network/ethernet"
     "github.com/arcpop/network/netdev"
     "github.com/arcpop/network/arp"
+    "github.com/arcpop/network/shell"
 	"log"
 )
 
@@ -22,4 +23,6 @@ func main() {
     arp.Start()
     ethernet.Start(loopback)
     ethernet.Start(eth1)
+    
+    shell.Run()
 }

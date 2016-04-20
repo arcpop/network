@@ -153,3 +153,39 @@ func arpTicker() {
         arpCacheLock.Unlock()
     }
 }
+
+func GetCacheAsString() string {
+    res := "IP - MAC\n"
+    arpCacheLock.RLock()
+    defer arpCacheLock.RUnlock()
+    for i, e := range arpCache {
+        res += util.ToIP(i).String() + " - " + e.mac.String() + "\n"
+    }
+    return res
+}
+
+func QueryIP(ip, dev string, retries int) bool {
+    ipaddr := net.ParseIP(ip).To4()
+    iface := netdev.InterfaceByName(dev)
+    if iface == nil || ipaddr == nil {
+        return false
+    }
+    ip32 := util.IPToUint32(ipaddr)
+    arpCacheLock.Lock()
+    _, ok := arpCache[ip32]
+    if ok {
+        arpCacheLock.Unlock()
+        return true
+    }
+    e := &arpCacheEntry{
+        dev: iface,
+        state: waiting,
+        ttl: Timeout,
+        retries: retries,
+        queuedPackets: make(chan []byte, 1024),
+    }
+    arpCache[ip32] = e
+    arpCacheLock.Unlock()
+    arpRequest(ipaddr, iface)
+    return true
+}

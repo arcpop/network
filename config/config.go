@@ -22,4 +22,15 @@ var Device struct {
 
 
 func init()  {
+    Device.RxQueueSize = 1024
+    Device.TxQueueSize = 1024
+    Device.RxQueueWorkers = 1
+    Device.TxQueueWorkers = 1
+    
+    Ethernet.NumberOfQueueWorkers = 1
+    Ethernet.TxQueueSize = 1024
+    Ethernet.RxQueueSize = 1024
+    
+    Arp.NumberOfQueueWorkers = 1
+    Arp.RxQueueSize = 1024
 }

@@ -37,28 +37,33 @@ type Header struct {
 func Start() {
 	ethernet.ArpIn = in
 	arpCache = make(map[uint32]*arpCacheEntry)
+	go arpTicker()
 }
 
 func in(pkt *ethernet.Layer2Packet) {
+	
 	if len(pkt.Data) < HeaderLength {
 		log.Println("Arp: Packet too short!")
 		return
 	}
+	
 	hdr := parseArpHeader(pkt.Data)
 	if bytes.Compare(hdr.srcHWAddr, pkt.L2Header.SrcMAC) != 0 {
 		log.Println("Arp: Dropping possible spoofed packet!")
 		return
 	}
 	
-	if bytes.Compare(hdr.targetHWAddr, BroadcastMACAddress) != 0 &&
+	if pkt.PacketType != ethernet.PacketTypeBroadcast &&
 		bytes.Compare(hdr.targetHWAddr, pkt.Dev.GetHardwareAddress()) != 0 {
 		log.Println("Arp: Packet not for us.")
 		return
 	}
+	
 	if hdr.hwAddrType != 1 || hdr.protoAddrType != 0x0800 || hdr.protoAddrLen != 4 || hdr.hwAddrLen != 6 {
 		log.Println("Arp: Packet for some other protocol.")
 		return
 	}
+	
 	arpPkt := &packet{dev: pkt.Dev, ethHdr: pkt.L2Header, arpHdr: hdr}
 	go handlePacket(arpPkt)
 }
@@ -102,7 +107,7 @@ func arpReply(targetIP net.IP, targetMAC net.HardwareAddr,dev netdev.Interface) 
 func handlePacket(arpPkt *packet) {
 	if arpPkt.arpHdr.opcode == 1 {
 		if arpPkt.arpHdr.targetProtoAddr.IsMulticast() {
-			log.Println("Arp: Dropping multicast packet")
+			log.Println("Arp: Dropping an ipv4 multicast address packet")
 			return
 		}
 		//Request, check if for this device's IP address.
@@ -111,6 +116,11 @@ func handlePacket(arpPkt *packet) {
 		} 
 		
 	} 
+	
+	log.Println("Arp: Updating cache: ", 
+		arpPkt.arpHdr.srcProtoAddr, "is", 
+		arpPkt.arpHdr.srcHWAddr)
+		
 	//We update also from arp requests since this improves our cache
 	cacheUpdate(arpPkt.dev, arpPkt.arpHdr.srcProtoAddr, arpPkt.arpHdr.srcHWAddr)
 }
