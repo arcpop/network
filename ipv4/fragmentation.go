@@ -3,6 +3,7 @@ package ipv4
 
 import (
 	"log"
+	"time"
 )
 
 type fragmentationKey struct {
@@ -22,43 +23,44 @@ type fragmentationData struct {
 
 func checkInsertFragment(current *fragmentationData, parts *[]*fragmentationData) (complete, collides bool) {
     prev := &fragmentationData {}
-    completeUntilNow := true
     inserted := false
     for i := 0; i < len(*parts); i++ {
+        
         v := (*parts)[i]
+        
         currentStart := prev.offset + prev.length
         
-        //Check if next fragment in slice is not bounding
-        if currentStart != v.offset {
-            //Check if we could insert the new fragment
-            if current.offset >= currentStart {
-                //Check if we have enough space for the new fragment
-                if (current.offset + current.length) <= v.offset {
-                    //Insert new fragment
-                    *parts = append(append((*parts)[:i], current), (*parts)[i:]...)
-                    //Check if the new fragment is not bounding
-                    if (current.offset + current.length) < v.offset {
-                        //Not bounding, we are not done yet, there is still some fragment missing
-                        return false, false 
-                    }
-                    //We just check if all remaining fragments are in place
-                    prev = current
-                    i++
-                    inserted = true
-                    continue
-                } else {
+        
+        if !inserted {
+            //Current matches at this position
+            if current.offset == currentStart {
+                if v.offset < current.offset + current.length {
                     return false, true
                 }
-            } else if !inserted {
-                return false, true
+                after := (*parts)[i:]
+                *parts = append(append((*parts)[:i], current), after...)
+                inserted = true
+                prev = current
+                i++
+                continue
             }
-        } /* else { //This code is just for having all else clauses, it actually does nothing.
-            completeUntilNow = completeUntilNow && true
-        } */
-        
+        } else {
+            //Check if complete
+            if v.offset > currentStart {
+                return false, false
+            }
+        }
         prev = v
     }
-    return completeUntilNow && prev.lastFragment, !inserted
+    
+    currentStart := prev.offset + prev.length
+    if current.offset >= currentStart {
+        *parts = append(*parts, current)
+        inserted = true
+        prev = current
+    }
+    
+    return prev.lastFragment, !inserted
 }
 
 func reassembleFragmented(hdr *Header, protocolData []byte) {
@@ -81,40 +83,60 @@ type fragment struct {
     key fragmentationKey
     frag *fragmentationData
 }
+type fragmentMapEntry struct {
+    parts []*fragmentationData
+    lastUpdated time.Time
+}
 
 var fragmentationQueue chan *fragment
-var fragmentedPackets map[fragmentationKey] []*fragmentationData
+var fragmentedPackets map[fragmentationKey] *fragmentMapEntry
 
 func fragmentationReassemblyWorker() {
-    for c := range fragmentationQueue {
-        parts, ok := fragmentedPackets[c.key]
-        if !ok {
-            fragmentedPackets[c.key] = []*fragmentationData{c.frag}
-        } else {
-            complete, collides := checkInsertFragment(c.frag, &parts)
-            fragmentedPackets[c.key] = parts
-            if collides {
-                log.Println("IPv4: Fragment collides with other received fragments, dropping.")
-            } else if complete {
-                needed := 0
-                for _, f := range parts {
-                    needed += len(f.data)
+    ticker := time.NewTicker(time.Second * 5)
+    fragmentedPackets = make(map[fragmentationKey] *fragmentMapEntry)
+    for {
+        select {
+        case c := <- fragmentationQueue:
+            parts, ok := fragmentedPackets[c.key]
+            if !ok {
+                e := &fragmentMapEntry{
+                    parts: []*fragmentationData{c.frag},
+                    lastUpdated: time.Now(),
                 }
-                data := make([]byte, needed)
-                offset := 0
-                for _, f := range parts {
-                    copy(data[offset:], f.data)
-                    offset += len(f.data)
+                fragmentedPackets[c.key] = e
+            } else {
+                complete, collides := checkInsertFragment(c.frag, &(parts.parts))
+                fragmentedPackets[c.key] = parts
+                if collides {
+                    log.Println("IPv4: Fragment collides with other received fragments, dropping.")
+                } else if complete {
+                    needed := 0
+                    for _, f := range parts.parts {
+                        needed += len(f.data)
+                    }
+                    data := make([]byte, needed)
+                    offset := 0
+                    for _, f := range parts.parts {
+                        copy(data[offset:], f.data)
+                        offset += len(f.data)
+                    }
+                    delete(fragmentedPackets, c.key)
+                    hdr := &Header{
+                        SourceIP: c.key.srcIP[:],
+                        TargetIP: c.key.dstIP[:],
+                        TotalLength: 20 + uint16(offset),
+                        Identification: c.key.id,
+                        Protocol: c.key.protocol,
+                    }
+                    go deliverToProtocols(hdr, data)
                 }
-                delete(fragmentedPackets, c.key)
-                hdr := &Header{
-                    SourceIP: c.key.srcIP[:],
-                    TargetIP: c.key.dstIP[:],
-                    TotalLength: 20 + uint16(offset),
-                    Identification: c.key.id,
-                    Protocol: c.key.protocol,
+            }
+        case _ = <- ticker.C:
+            lastAllowedTime := time.Now().Add(-1 * time.Minute)
+            for k,v := range fragmentedPackets {
+                if v.lastUpdated.Before(lastAllowedTime) {
+                    delete(fragmentedPackets, k)
                 }
-                go deliverToProtocols(hdr, data)
             }
         }
     }

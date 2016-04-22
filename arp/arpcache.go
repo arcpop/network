@@ -8,6 +8,7 @@ import (
 	"time"
 	"log"
 	"github.com/arcpop/network/util"
+	"encoding/binary"
 )
 
 var (
@@ -16,7 +17,7 @@ var (
 )
 
 const (
-    DefaultTTL = 60
+    DefaultTTL = 3600
     Timeout = 5
 )
 
@@ -39,8 +40,8 @@ var (
     arpCacheLock sync.RWMutex
 )
 
-//SetIPAndSend should be used by ipv4 layer to send packets. They get the destination mac assigned automatically.
-func SetIPAndSend(dev netdev.Interface, pkt []byte, targetIP net.IP) {
+//SetMACAndSend should be used by ipv4 layer to send packets. They get the destination mac assigned automatically.
+func SetMACAndSend(dev netdev.Interface, pkt []byte, targetIP net.IP) {
     arpCacheLock.Lock()
     ip32 := util.IPToUint32(targetIP)
     e, ok := arpCache[ip32]
@@ -58,9 +59,11 @@ func SetIPAndSend(dev netdev.Interface, pkt []byte, targetIP net.IP) {
         go arpRequest(targetIP, dev)
         return
     }
-    copy(pkt[0:6], e.mac)
-    e.dev.TxPacket(pkt)
     arpCacheLock.Unlock()
+    copy(pkt[0:6], e.mac)
+    copy(pkt[6:12], e.dev.GetHardwareAddress())
+    binary.BigEndian.PutUint16(pkt[12:14], 0x0800)
+    e.dev.TxPacket(pkt)
 }
 func arpCacheInsert(dev netdev.Interface, ip net.IP, mac net.HardwareAddr)  {
     ip32 := util.IPToUint32(ip)
@@ -78,6 +81,29 @@ func arpCacheInsert(dev netdev.Interface, ip net.IP, mac net.HardwareAddr)  {
     if ok {
         go sendQueuedPackets(oldEntry)
     }
+}
+func PassiveLearn(iface netdev.Interface, ip net.IP, mac net.HardwareAddr)  {
+    ip32 := util.IPToUint32(ip)
+    arpCacheLock.Lock()
+    e, ok := arpCache[ip32]
+    if !ok {
+        arpCacheLock.Unlock()
+        return
+    }
+    if e.state == waiting {
+        arpCacheLock.Unlock()
+        go arpCacheInsert(iface, ip, mac)
+        return
+    }
+    //Check if there was some left over wrong entry
+    if bytes.Compare(mac, e.mac) != 0 {
+        delete(arpCache, ip32)
+        arpCacheLock.Unlock()
+        go arpCacheInsert(iface, ip, mac)
+        return
+    }
+    e.ttl = DefaultTTL
+    arpCacheLock.Unlock()
 }
 
 func cacheUpdate(dev netdev.Interface, ip net.IP, mac net.HardwareAddr) {
@@ -106,6 +132,8 @@ func sendQueuedPackets(e *arpCacheEntry) {
             select {
                 case pkt := <- e.queuedPackets:
                     copy(pkt[0:6], e.mac)
+                    copy(pkt[6:12], e.dev.GetHardwareAddress())
+                    binary.BigEndian.PutUint16(pkt[12:14], 0x0800)
                     e.dev.TxPacket(pkt)
                 default:
                     close(e.queuedPackets)

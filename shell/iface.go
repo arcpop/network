@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"github.com/arcpop/network/netdev"
 	"net"
-	"strings"
-	"strconv"
+	"github.com/arcpop/network/ipv4"
 )
 
 var ifaceHelp = "iface - Possible commands:\n" + 
     "\tiface -> Prints info on all interfaces\n" + 
     "\tiface <interface> -> Prints info on specified interface\n" +
-    "\tiface <interface> <CIDR> -> Sets addresse on specified interface,\n\t\t address should be in CIDR notation\n"
+    "\tiface <interface> add [CIDR] -> Adds the specified interface\n" +
+    "\tiface <interface> addr <CIDR> -> Sets address on specified interface,\n\t\taddress should be in CIDR notation\n"
 
 func runIface(args []string) {
     if len(args) < 1 {
@@ -26,12 +26,12 @@ func runIface(args []string) {
             return
         }
         fmt.Println(netdev.GetInterfaceInfo(iface))
-    } else if len(args) == 2 { 
+    } else if len(args) == 3 { 
         ifacename := args[0]
-        cidr := args[1]
-        iface := netdev.InterfaceByName(ifacename)
-        if iface == nil {
-            fmt.Println("No interface with name " + ifacename + "found!")
+        what := args[1]
+        cidr := args[2]
+        if what != "addr" {
+            fmt.Println(ifaceHelp)
             return
         }
         ip, n, err := net.ParseCIDR(cidr)
@@ -41,19 +41,9 @@ func runIface(args []string) {
         }
         ip4 := ip.To4()
         if ip4 != nil {
-            iface.SetIPv4Address(ip4, net.IP(n.Mask).To4())
+            ipv4.ConfigureInterfaceAddress(ifacename, net.IPNet{IP:ip4, Mask: n.Mask})
         } else {
-            strs := strings.Split(cidr, "/")
-            if len(strs) < 2 {
-                fmt.Println("Failed to parse address")
-                return
-            }
-            nm, err := strconv.Atoi(strs[1])
-            if err != nil {
-                fmt.Println("Failed to parse address: ", err)
-                return
-            }
-            iface.SetIPv6Address(ip, nm)
+            //Configure ipv6
         }
     } else {
         fmt.Println(ifaceHelp)

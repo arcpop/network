@@ -27,3 +27,17 @@ func ToIP(u uint32) net.IP {
     binary.BigEndian.PutUint32(buf[:], u)
     return net.IP(buf[:])
 }
+
+func Drain(from, to []byte) (fromEmpty bool, n int) {
+    needed := len(to)
+    available := len(from)
+    if available > 0 {
+        if available >= needed {
+            copy(to[:], from[:needed])
+            return false, needed
+        }
+        copy(to[:available], from[:available])
+        needed -= available
+    }
+    return true, available
+}

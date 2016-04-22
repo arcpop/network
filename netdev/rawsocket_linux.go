@@ -10,6 +10,7 @@ import (
 	"sync"
 	"github.com/arcpop/network/config"
 	"errors"
+	"unsafe"
 )
 
 type rawsock struct {
@@ -33,6 +34,17 @@ type rawsock struct {
 
 var ErrDeviceAlreadyExists = errors.New("Rawsocket: A rawsocket implementation for that device already exists!")
 
+type ifrfl struct {
+    ifrname [syscall.IFNAMSIZ]byte
+    ifrflags int16
+}
+func ioctl(fd, code int, p uintptr) error {
+    _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(code), p)
+    if errno == 0 {
+        return nil
+    }
+    return errno
+}
 
 func NewRawSocket(ifname string) (Interface, error) {
     interfaceListLock.Lock()
@@ -64,6 +76,26 @@ func NewRawSocket(ifname string) (Interface, error) {
         syscall.Close(fd)
         return nil, err
     }
+    
+    ifr := ifrfl{}
+    copy(ifr.ifrname[:], []byte(ifname))
+    ifr.ifrname[syscall.IFNAMSIZ - 1] = 0
+    err = ioctl(fd, syscall.SIOCGIFFLAGS, uintptr(unsafe.Pointer(&ifr)))
+    if err != nil {
+        syscall.Close(fd)
+        return nil, err
+    }
+    
+    ifr.ifrflags |= syscall.IFF_UP
+    
+    copy(ifr.ifrname[:], []byte(ifname))
+    ifr.ifrname[syscall.IFNAMSIZ - 1] = 0
+    err = ioctl(fd, syscall.SIOCSIFFLAGS, uintptr(unsafe.Pointer(&ifr)))
+    if err != nil {
+        syscall.Close(fd)
+        return nil, err
+    }
+    
     
     rs := &rawsock{ 
         fd: fd, 

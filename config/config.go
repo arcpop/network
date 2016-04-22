@@ -20,6 +20,10 @@ var Device struct {
     TxQueueWorkers int
 }
 
+var UDP struct {
+    RecvQueueSize int
+    ConnectionRecvQueueSize int
+}
 
 func init()  {
     Device.RxQueueSize = 1024
@@ -33,4 +37,7 @@ func init()  {
     
     Arp.NumberOfQueueWorkers = 1
     Arp.RxQueueSize = 1024
+    
+    UDP.RecvQueueSize = 512
+    UDP.ConnectionRecvQueueSize = 512
 }

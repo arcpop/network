@@ -4,8 +4,10 @@ import (
     "github.com/arcpop/network/ethernet"
     "github.com/arcpop/network/netdev"
     "github.com/arcpop/network/arp"
+    "github.com/arcpop/network/ipv4"
     "github.com/arcpop/network/shell"
 	"log"
+	"net"
 )
 
 func main() {
@@ -23,6 +25,7 @@ func main() {
     arp.Start()
     ethernet.Start(loopback)
     ethernet.Start(eth1)
-    
+    ipv4.Start()
+    ipv4.ConfigureInterfaceAddress("eth1", net.IPNet{ IP:net.IP{192, 168, 56, 101}, Mask: net.IPMask{255, 255, 255, 0}})
     shell.Run()
 }

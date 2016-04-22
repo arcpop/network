@@ -92,11 +92,11 @@ func arpReply(targetIP net.IP, targetMAC net.HardwareAddr,dev netdev.Interface) 
 	copy(buf[6:12], dev.GetHardwareAddress())
 	binary.BigEndian.PutUint16(buf[12:14], 0x0806)
 	arpPkt := buf[ethernet.HeaderLength:]
-	binary.BigEndian.PutUint16(arpPkt[0:2], 0x0002)
+	binary.BigEndian.PutUint16(arpPkt[0:2], 0x0001)
 	binary.BigEndian.PutUint16(arpPkt[2:4], 0x0800)
 	arpPkt[4] = 6
 	arpPkt[5] = 4
-	binary.BigEndian.PutUint16(arpPkt[6:8], 1)
+	binary.BigEndian.PutUint16(arpPkt[6:8], 2)
 	copy(arpPkt[8:14], dev.GetHardwareAddress())
 	copy(arpPkt[14:18], dev.GetIPv4Address())
 	copy(arpPkt[18:24], targetMAC)
@@ -117,9 +117,6 @@ func handlePacket(arpPkt *packet) {
 		
 	} 
 	
-	log.Println("Arp: Updating cache: ", 
-		arpPkt.arpHdr.srcProtoAddr, "is", 
-		arpPkt.arpHdr.srcHWAddr)
 		
 	//We update also from arp requests since this improves our cache
 	cacheUpdate(arpPkt.dev, arpPkt.arpHdr.srcProtoAddr, arpPkt.arpHdr.srcHWAddr)
